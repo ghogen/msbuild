@@ -599,6 +599,7 @@ namespace Microsoft.Build.BackEnd
                             while (localPacketQueue.TryDequeue(out packet))
                             {
                                 var packetStream = new MemoryStream();
+                                _binaryWriter = new BinaryWriter(packetStream);
                                 packetStream.SetLength(0);
 
                                 ITranslator writeTranslator = BinaryTranslator.GetWriteTranslator(packetStream);
