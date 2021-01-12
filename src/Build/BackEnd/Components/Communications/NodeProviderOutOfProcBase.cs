@@ -741,25 +741,28 @@ namespace Microsoft.Build.BackEnd
             /// <param name="packet">The packet to send.</param>
             public void SendData(INodePacket packet)
             {
-                // clear the buffer but keep the underlying capacity to avoid reallocations
-                _writeBufferMemoryStream.SetLength(0);
+                var stream = new MemoryStream();
+                var writer = new BinaryWriter(stream);
 
-                ITranslator writeTranslator = BinaryTranslator.GetWriteTranslator(_writeBufferMemoryStream);
+                // clear the buffer but keep the underlying capacity to avoid reallocations
+                stream.SetLength(0);
+
+                ITranslator writeTranslator = BinaryTranslator.GetWriteTranslator(stream);
                 try
                 {
-                    _writeBufferMemoryStream.WriteByte((byte)packet.Type);
+                    stream.WriteByte((byte)packet.Type);
 
                     // Pad for the packet length
-                    _writeBufferStreamWriter.Write(0);
+                    writer.Write(0);
                     packet.Translate(writeTranslator);
 
-                    int writeStreamLength = (int)_writeBufferMemoryStream.Position;
+                    int writeStreamLength = (int)stream.Position;
 
                     // Now plug in the real packet length
-                    _writeBufferMemoryStream.Position = 1;
-                    _writeBufferStreamWriter.Write(writeStreamLength - 5);
+                    stream.Position = 1;
+                    writer.Write(writeStreamLength - 5);
 
-                    byte[] writeStreamBuffer = _writeBufferMemoryStream.GetBuffer();
+                    byte[] writeStreamBuffer = stream.GetBuffer();
 
                     for (int i = 0; i < writeStreamLength; i += MaxPacketWriteSize)
                     {
