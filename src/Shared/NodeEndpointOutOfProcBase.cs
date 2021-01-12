@@ -598,7 +598,7 @@ namespace Microsoft.Build.BackEnd
                             INodePacket packet;
                             while (localPacketQueue.TryDequeue(out packet))
                             {
-                                var packetStream = _packetStream;
+                                var packetStream = new MemoryStream();
                                 packetStream.SetLength(0);
 
                                 ITranslator writeTranslator = BinaryTranslator.GetWriteTranslator(packetStream);
