@@ -741,8 +741,8 @@ namespace Microsoft.Build.BackEnd
             /// <param name="packet">The packet to send.</param>
             public void SendData(INodePacket packet)
             {
-                var stream = new MemoryStream();
-                var writer = new BinaryWriter(stream);
+                var stream = this._writeBufferMemoryStream;
+                var writer = this._writeBufferStreamWriter;
 
                 // clear the buffer but keep the underlying capacity to avoid reallocations
                 stream.SetLength(0);
