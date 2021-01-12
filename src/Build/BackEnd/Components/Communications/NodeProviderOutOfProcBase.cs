@@ -902,7 +902,7 @@ namespace Microsoft.Build.BackEnd
                 // Ensures the buffer is at least this length.
                 // It avoids reallocations if the buffer is already large enough.
                 _readBufferMemoryStream.SetLength(packetLength);
-                byte[] packetData = _readBufferMemoryStream.GetBuffer();
+                byte[] packetData = new byte[packetLength]; // _readBufferMemoryStream.GetBuffer();
 
                 _clientToServerStream.BeginRead(packetData, 0, packetLength, BodyReadComplete, new Tuple<byte[], int>(packetData, packetLength));
             }
