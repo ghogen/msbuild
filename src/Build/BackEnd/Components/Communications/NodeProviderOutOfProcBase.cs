@@ -702,7 +702,7 @@ namespace Microsoft.Build.BackEnd
                     int packetLength = BitConverter.ToInt32(_headerByte, 1);
 
                     _readBufferMemoryStream.SetLength(packetLength);
-                    byte[] packetData = _readBufferMemoryStream.GetBuffer();
+                    byte[] packetData = new byte[packetLength]; // _readBufferMemoryStream.GetBuffer();
 
                     try
                     {
