@@ -8,20 +8,20 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Build.Experimental.BuildCheck;
 
-namespace Microsoft.Build.BuildCheck.Acquisition;
+namespace Microsoft.Build.Experimental.BuildCheck.Acquisition;
 
 // https://github.com/dotnet/msbuild/issues/9633
 // Acquisition
 //  define the data that will be passed to the acquisition module (and remoted if needed)
-internal class AnalyzerAcquisitionData(string data)
+internal class AnalyzerAcquisitionData(string assemblyPath)
 {
-    public string Data { get; init; } = data;
+    public string AssemblyPath { get; init; } = assemblyPath;
 }
 
 internal static class AnalyzerAcquisitionDataExtensions
 {
     public static AnalyzerAcquisitionData ToAnalyzerAcquisitionData(this BuildCheckAcquisitionEventArgs eventArgs) =>
-        new(eventArgs.AcquisitionData);
+        new(eventArgs.AcquisitionPath);
 
-    public static BuildCheckAcquisitionEventArgs ToBuildEventArgs(this AnalyzerAcquisitionData data) => new(data.Data);
+    public static BuildCheckAcquisitionEventArgs ToBuildEventArgs(this AnalyzerAcquisitionData data) => new(data.AssemblyPath);
 }

@@ -3,27 +3,19 @@
 
 using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
 using System.Diagnostics;
-using System.Diagnostics.Tracing;
-using System.IO;
 using System.Linq;
-using System.Runtime.ConstrainedExecution;
 using System.Threading;
 using Microsoft.Build.BackEnd;
-using Microsoft.Build.BackEnd.Components.Caching;
 using Microsoft.Build.BackEnd.Logging;
-using Microsoft.Build.BuildCheck.Acquisition;
-using Microsoft.Build.BuildCheck.Analyzers;
-using Microsoft.Build.BuildCheck.Logging;
-using Microsoft.Build.Collections;
-using Microsoft.Build.Construction;
-using Microsoft.Build.Evaluation;
+using Microsoft.Build.Experimental.BuildCheck.Acquisition;
+using Microsoft.Build.Experimental.BuildCheck.Analyzers;
+using Microsoft.Build.Experimental.BuildCheck.Logging;
 using Microsoft.Build.Experimental.BuildCheck;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Shared;
 
-namespace Microsoft.Build.BuildCheck.Infrastructure;
+namespace Microsoft.Build.Experimental.BuildCheck.Infrastructure;
 
 internal delegate BuildAnalyzer BuildAnalyzerFactory();
 internal delegate BuildAnalyzerWrapper BuildAnalyzerWrapperFactory(ConfigurationContext configurationContext);
@@ -34,6 +26,7 @@ internal delegate BuildAnalyzerWrapper BuildAnalyzerWrapperFactory(Configuration
 internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
 {
     private static IBuildCheckManager? s_globalInstance;
+
     internal static IBuildCheckManager GlobalInstance => s_globalInstance ?? throw new InvalidOperationException("BuildCheckManagerProvider not initialized");
 
     public IBuildCheckManager Instance => GlobalInstance;
@@ -68,16 +61,25 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
 
     public void ShutdownComponent() => GlobalInstance.Shutdown();
 
-
-    private sealed class BuildCheckManager : IBuildCheckManager
+    internal sealed class BuildCheckManager : IBuildCheckManager
     {
         private readonly TracingReporter _tracingReporter = new TracingReporter();
-        private readonly BuildCheckCentralContext _buildCheckCentralContext = new();
+        private readonly ConfigurationProvider _configurationProvider = new ConfigurationProvider();
+        private readonly BuildCheckCentralContext _buildCheckCentralContext;
         private readonly ILoggingService _loggingService;
-        private readonly List<BuildAnalyzerFactoryContext> _analyzersRegistry =[];
+        private readonly List<BuildAnalyzerFactoryContext> _analyzersRegistry;
         private readonly bool[] _enabledDataSources = new bool[(int)BuildCheckDataSource.ValuesCount];
         private readonly BuildEventsProcessor _buildEventsProcessor;
-        private readonly BuildCheckAcquisitionModule _acquisitionModule = new();
+        private readonly IBuildCheckAcquisitionModule _acquisitionModule;
+
+        internal BuildCheckManager(ILoggingService loggingService)
+        {
+            _analyzersRegistry = new List<BuildAnalyzerFactoryContext>();
+            _acquisitionModule = new BuildCheckAcquisitionModule(loggingService);
+            _loggingService = loggingService;
+            _buildCheckCentralContext = new(_configurationProvider);
+            _buildEventsProcessor = new(_buildCheckCentralContext);
+        }
 
         private bool IsInProcNode => _enabledDataSources[(int)BuildCheckDataSource.EventArgs] &&
                                      _enabledDataSources[(int)BuildCheckDataSource.BuildExecution];
@@ -89,43 +91,44 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
         /// <param name="buildCheckDataSource"></param>
         public void SetDataSource(BuildCheckDataSource buildCheckDataSource)
         {
+            Stopwatch stopwatch = Stopwatch.StartNew();
             if (!_enabledDataSources[(int)buildCheckDataSource])
             {
                 _enabledDataSources[(int)buildCheckDataSource] = true;
                 RegisterBuiltInAnalyzers(buildCheckDataSource);
             }
+            stopwatch.Stop();
+            _tracingReporter.AddSetDataSourceStats(stopwatch.Elapsed);
         }
 
-        public void ProcessAnalyzerAcquisition(AnalyzerAcquisitionData acquisitionData)
+        public void ProcessAnalyzerAcquisition(AnalyzerAcquisitionData acquisitionData, BuildEventContext buildEventContext)
         {
+            Stopwatch stopwatch = Stopwatch.StartNew();
             if (IsInProcNode)
             {
-                var factory = _acquisitionModule.CreateBuildAnalyzerFactory(acquisitionData);
-                RegisterCustomAnalyzer(BuildCheckDataSource.EventArgs, factory);
+                var analyzersFactories = _acquisitionModule.CreateBuildAnalyzerFactories(acquisitionData, buildEventContext);
+                if (analyzersFactories.Count != 0)
+                {
+                    RegisterCustomAnalyzer(BuildCheckDataSource.EventArgs, analyzersFactories, buildEventContext);
+                }
+                else
+                {
+                    _loggingService.LogComment(buildEventContext, MessageImportance.Normal, "CustomAnalyzerFailedAcquisition", acquisitionData.AssemblyPath);
+                }
             }
             else
             {
                 BuildCheckAcquisitionEventArgs eventArgs = acquisitionData.ToBuildEventArgs();
-
-                // We may want to pass the real context here (from evaluation)
-                eventArgs.BuildEventContext = new BuildEventContext(
-                    BuildEventContext.InvalidNodeId,
-                    BuildEventContext.InvalidProjectInstanceId,
-                    BuildEventContext.InvalidProjectContextId,
-                    BuildEventContext.InvalidTargetId,
-                    BuildEventContext.InvalidTaskId);
+                eventArgs.BuildEventContext = buildEventContext;
 
                 _loggingService.LogBuildEvent(eventArgs);
             }
-        }
-
-        internal BuildCheckManager(ILoggingService loggingService)
-        {
-            _loggingService = loggingService;
-            _buildEventsProcessor = new(_buildCheckCentralContext);
+            stopwatch.Stop();
+            _tracingReporter.AddAcquisitionStats(stopwatch.Elapsed);
         }
 
         private static T Construct<T>() where T : new() => new();
+
         private static readonly (string[] ruleIds, bool defaultEnablement, BuildAnalyzerFactory factory)[][] s_builtInFactoriesPerDataSource =
         [
             // BuildCheckDataSource.EventArgs
@@ -136,43 +139,67 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
             []
         ];
 
+        /// <summary>
+        /// For tests only. TODO: Remove when analyzer acquisition is done.
+        /// </summary>
+        internal static (string[] ruleIds, bool defaultEnablement, BuildAnalyzerFactory factory)[][]? s_testFactoriesPerDataSource;
+
         private void RegisterBuiltInAnalyzers(BuildCheckDataSource buildCheckDataSource)
         {
             _analyzersRegistry.AddRange(
                 s_builtInFactoriesPerDataSource[(int)buildCheckDataSource]
                     .Select(v => new BuildAnalyzerFactoryContext(v.factory, v.ruleIds, v.defaultEnablement)));
+
+            if (s_testFactoriesPerDataSource is not null)
+            {
+                _analyzersRegistry.AddRange(
+                    s_testFactoriesPerDataSource[(int)buildCheckDataSource]
+                        .Select(v => new BuildAnalyzerFactoryContext(v.factory, v.ruleIds, v.defaultEnablement)));
+            }
         }
 
         /// <summary>
-        /// To be used by acquisition module
-        /// Registeres the custom analyzer, the construction of analyzer is deferred until the first using project is encountered
+        /// To be used by acquisition module.
+        /// Registers the custom analyzers, the construction of analyzers is deferred until the first using project is encountered.
         /// </summary>
-        internal void RegisterCustomAnalyzer(
+        internal void RegisterCustomAnalyzers(
             BuildCheckDataSource buildCheckDataSource,
-            BuildAnalyzerFactory factory,
+            IEnumerable<BuildAnalyzerFactory> factories,
             string[] ruleIds,
             bool defaultEnablement)
         {
             if (_enabledDataSources[(int)buildCheckDataSource])
             {
-                _analyzersRegistry.Add(new BuildAnalyzerFactoryContext(factory, ruleIds, defaultEnablement));
+                foreach (BuildAnalyzerFactory factory in factories)
+                {
+                    _analyzersRegistry.Add(new BuildAnalyzerFactoryContext(factory, ruleIds, defaultEnablement));
+                }
             }
         }
 
         /// <summary>
         /// To be used by acquisition module
-        /// Registeres the custom analyzer, the construction of analyzer is needed during registration
+        /// Registers the custom analyzer, the construction of analyzer is needed during registration.
         /// </summary>
+        /// <param name="buildCheckDataSource">Represents different data sources used in build check operations.</param>
+        /// <param name="factories">A collection of build analyzer factories for rules instantiation.</param>
+        /// <param name="buildEventContext">The context of the build event.</param>
         internal void RegisterCustomAnalyzer(
             BuildCheckDataSource buildCheckDataSource,
-            BuildAnalyzerFactory factory)
+            IEnumerable<BuildAnalyzerFactory> factories,
+            BuildEventContext buildEventContext)
         {
             if (_enabledDataSources[(int)buildCheckDataSource])
             {
-                var instance = factory();
-                _analyzersRegistry.Add(new BuildAnalyzerFactoryContext(factory,
-                    instance.SupportedRules.Select(r => r.Id).ToArray(),
-                    instance.SupportedRules.Any(r => r.DefaultConfiguration.IsEnabled == true)));
+                foreach (var factory in factories)
+                {
+                    var instance = factory();
+                    _analyzersRegistry.Add(new BuildAnalyzerFactoryContext(
+                        factory,
+                        instance.SupportedRules.Select(r => r.Id).ToArray(),
+                        instance.SupportedRules.Any(r => r.DefaultConfiguration.IsEnabled == true)));
+                    _loggingService.LogComment(buildEventContext, MessageImportance.Normal, "CustomAnalyzerSuccessfulAcquisition", instance.FriendlyName);
+                }     
             }
         }
 
@@ -188,7 +215,7 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
             if (analyzerFactoryContext.MaterializedAnalyzer == null)
             {
                 BuildAnalyzerConfiguration[] userConfigs =
-                    ConfigurationProvider.GetUserConfigurations(projectFullPath, analyzerFactoryContext.RuleIds);
+                    _configurationProvider.GetUserConfigurations(projectFullPath, analyzerFactoryContext.RuleIds);
 
                 if (userConfigs.All(c => !(c.IsEnabled ?? analyzerFactoryContext.IsEnabledByDefault)))
                 {
@@ -197,7 +224,7 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
                 }
 
                 CustomConfigurationData[] customConfigData =
-                    ConfigurationProvider.GetCustomConfigurations(projectFullPath, analyzerFactoryContext.RuleIds);
+                    _configurationProvider.GetCustomConfigurations(projectFullPath, analyzerFactoryContext.RuleIds);
 
                 ConfigurationContext configurationContext = ConfigurationContext.FromDataEnumeration(customConfigData);
 
@@ -221,7 +248,7 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
                         $"The analyzer '{analyzer.FriendlyName}' exposes rules '{analyzer.SupportedRules.Select(r => r.Id).ToCsvString()}', but different rules were declared during registration: '{analyzerFactoryContext.RuleIds.ToCsvString()}'");
                 }
 
-                configurations = ConfigurationProvider.GetMergedConfigurations(userConfigs, analyzer);
+                configurations = _configurationProvider.GetMergedConfigurations(userConfigs, analyzer);
 
                 // technically all analyzers rules could be disabled, but that would mean
                 // that the provided 'IsEnabledByDefault' value wasn't correct - the only
@@ -236,9 +263,9 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
             {
                 wrapper = analyzerFactoryContext.MaterializedAnalyzer;
 
-                configurations = ConfigurationProvider.GetMergedConfigurations(projectFullPath, wrapper.BuildAnalyzer);
+                configurations = _configurationProvider.GetMergedConfigurations(projectFullPath, wrapper.BuildAnalyzer);
 
-                ConfigurationProvider.CheckCustomConfigurationDataValidity(projectFullPath,
+                _configurationProvider.CheckCustomConfigurationDataValidity(projectFullPath,
                     analyzerFactoryContext.RuleIds[0]);
 
                 // Update the wrapper
@@ -260,7 +287,7 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
             // On an execution node - we might remove and dispose the analyzers once project is done
 
             // If it's already constructed - just control the custom settings do not differ
-
+            Stopwatch stopwatch = Stopwatch.StartNew();
             List<BuildAnalyzerFactoryContext> analyzersToRemove = new();
             foreach (BuildAnalyzerFactoryContext analyzerFactoryContext in _analyzersRegistry)
             {
@@ -285,11 +312,13 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
             foreach (var analyzerToRemove in analyzersToRemove.Select(a => a.MaterializedAnalyzer).Where(a => a != null))
             {
                 _buildCheckCentralContext.DeregisterAnalyzer(analyzerToRemove!);
-                _tracingReporter.AddStats(analyzerToRemove!.BuildAnalyzer.FriendlyName, analyzerToRemove.Elapsed);
+                _tracingReporter.AddAnalyzerStats(analyzerToRemove!.BuildAnalyzer.FriendlyName, analyzerToRemove.Elapsed);
                 analyzerToRemove.BuildAnalyzer.Dispose();
             }
-        }
 
+            stopwatch.Stop();
+            _tracingReporter.AddNewProjectStats(stopwatch.Elapsed);
+        }
 
         public void ProcessEvaluationFinishedEventArgs(
             AnalyzerLoggingContext buildAnalysisContext,
@@ -297,19 +326,37 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
             => _buildEventsProcessor
                 .ProcessEvaluationFinishedEventArgs(buildAnalysisContext, evaluationFinishedEventArgs);
 
-        // Tracing: https://github.com/dotnet/msbuild/issues/9629
-        public Dictionary<string, TimeSpan> CreateTracingStats()
+        public void ProcessTaskStartedEventArgs(
+            AnalyzerLoggingContext buildAnalysisContext,
+            TaskStartedEventArgs taskStartedEventArgs)
+            => _buildEventsProcessor
+                .ProcessTaskStartedEventArgs(buildAnalysisContext, taskStartedEventArgs);
+
+        public void ProcessTaskFinishedEventArgs(
+            AnalyzerLoggingContext buildAnalysisContext,
+            TaskFinishedEventArgs taskFinishedEventArgs)
+            => _buildEventsProcessor
+                .ProcessTaskFinishedEventArgs(buildAnalysisContext, taskFinishedEventArgs);
+
+        public void ProcessTaskParameterEventArgs(
+            AnalyzerLoggingContext buildAnalysisContext,
+            TaskParameterEventArgs taskParameterEventArgs)
+            => _buildEventsProcessor
+                .ProcessTaskParameterEventArgs(buildAnalysisContext, taskParameterEventArgs);
+
+        public Dictionary<string, TimeSpan> CreateAnalyzerTracingStats()
         {
             foreach (BuildAnalyzerFactoryContext analyzerFactoryContext in _analyzersRegistry)
             {
                 if (analyzerFactoryContext.MaterializedAnalyzer != null)
                 {
-                    _tracingReporter.AddStats(analyzerFactoryContext.FriendlyName,
+                    _tracingReporter.AddAnalyzerStats(analyzerFactoryContext.FriendlyName,
                         analyzerFactoryContext.MaterializedAnalyzer.Elapsed);
                     analyzerFactoryContext.MaterializedAnalyzer.ClearStats();
                 }
             }
 
+            _tracingReporter.AddAnalyzerInfraStats();
             return _tracingReporter.TracingStats;
         }
 
@@ -321,9 +368,11 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
                 return;
             }
 
-            BuildCheckTracingEventArgs eventArgs =
-                new(CreateTracingStats()) { BuildEventContext = loggingContext.BuildEventContext };
-            loggingContext.LogBuildEvent(eventArgs);
+            var analyzerEventStats = CreateAnalyzerTracingStats();
+
+            BuildCheckTracingEventArgs analyzerEventArg =
+                new(analyzerEventStats) { BuildEventContext = loggingContext.BuildEventContext };
+            loggingContext.LogBuildEvent(analyzerEventArg);
         }
 
         public void StartProjectEvaluation(BuildCheckDataSource buildCheckDataSource, BuildEventContext buildEventContext,
@@ -373,9 +422,13 @@ internal sealed class BuildCheckManagerProvider : IBuildCheckManagerProvider
                 ba.Initialize(configContext);
                 return new BuildAnalyzerWrapper(ba);
             };
+
             public BuildAnalyzerWrapper? MaterializedAnalyzer { get; set; }
+
             public string[] RuleIds { get; init; } = ruleIds;
+
             public bool IsEnabledByDefault { get; init; } = isEnabledByDefault;
+
             public string FriendlyName => MaterializedAnalyzer?.BuildAnalyzer.FriendlyName ?? factory().FriendlyName;
         }
     }
