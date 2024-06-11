@@ -4,11 +4,13 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.Build.Execution;
 using Microsoft.Build.Experimental.BuildCheck;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Shared;
 using Microsoft.Build.UnitTests;
+using Microsoft.Build.Utilities;
 using Shouldly;
 using Xunit;
 using static Microsoft.Build.Experimental.BuildCheck.Infrastructure.BuildCheckManagerProvider;
@@ -114,15 +116,17 @@ namespace Microsoft.Build.BuildCheck.UnitTests
             data.Parameters["Text"].Value.ShouldBe("Hello");
         }
 
-        [Fact]
-        public void ReportsComplexTaskParameters()
+        [Theory]
+        [InlineData("<Output TaskParameter='CombinedPaths' ItemName='OutputDirectories' />")]
+        [InlineData("<Output TaskParameter='CombinedPaths' PropertyName='OutputDirectories' />")]
+        public void ReportsComplexTaskParameters(string outputElement)
         {
-            BuildProject("""
+            BuildProject($"""
                 <ItemGroup>
                   <TestItem Include='item1;item2'/>
                 </ItemGroup>
                 <CombinePath BasePath='base' Paths='@(TestItem)'>
-                    <Output TaskParameter='CombinedPaths' ItemName='OutputDirectories' />
+                    {outputElement}
                 </CombinePath>
             """);
 
@@ -139,9 +143,39 @@ namespace Microsoft.Build.BuildCheck.UnitTests
             listValue[1]!.ShouldBeAssignableTo(typeof(ITaskItem));
             ((ITaskItem)listValue[0]!).ItemSpec.ShouldBe("item1");
             ((ITaskItem)listValue[1]!).ItemSpec.ShouldBe("item2");
+            data.Parameters["CombinedPaths"].IsOutput.ShouldBe(true);
+            data.Parameters["CombinedPaths"].Value.ShouldNotBeNull();
+        }
 
-            // The name of the parameter would ideally be "CombinedPaths" but we don't seem to be currently logging it.
-            data.Parameters["OutputDirectories"].IsOutput.ShouldBe(true);
+        [Fact]
+        public void TaskParameterEnumeratesValues()
+        {
+            var parameter1 = MakeParameter("string");
+            parameter1.EnumerateValues().SequenceEqual(["string"]).ShouldBeTrue();
+            parameter1.EnumerateStringValues().SequenceEqual(["string"]).ShouldBeTrue();
+
+            var parameter2 = MakeParameter(true);
+            parameter2.EnumerateValues().SequenceEqual([true]);
+            parameter2.EnumerateStringValues().SequenceEqual(["True"]).ShouldBeTrue();
+
+            var item1 = new TaskItem("item1");
+            var parameter3 = MakeParameter(item1);
+            parameter3.EnumerateValues().SequenceEqual([item1]).ShouldBeTrue();
+            parameter3.EnumerateStringValues().SequenceEqual(["item1"]).ShouldBeTrue();
+
+            var array1 = new object[] { "string1", "string2" };
+            var parameter4 = MakeParameter(array1);
+            parameter4.EnumerateValues().SequenceEqual(array1).ShouldBeTrue();
+            parameter4.EnumerateStringValues().SequenceEqual(array1).ShouldBeTrue();
+
+            var item2 = new TaskItem("item2");
+            var array2 = new ITaskItem[] { item1, item2 };
+            var parameter5 = MakeParameter(array2);
+            parameter5.EnumerateValues().SequenceEqual(array2).ShouldBeTrue();
+            parameter5.EnumerateStringValues().SequenceEqual(["item1", "item2"]).ShouldBeTrue();
+
+            static TaskInvocationAnalysisData.TaskParameter MakeParameter(object value)
+                => new TaskInvocationAnalysisData.TaskParameter(value, IsOutput: false);
         }
     }
 }
