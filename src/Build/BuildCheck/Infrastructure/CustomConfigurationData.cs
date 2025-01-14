@@ -3,17 +3,13 @@
 
 using System;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Microsoft.Build.Experimental.BuildCheck;
 
 /// <summary>
 /// Holder for the key-value pairs of unstructured data from .editorconfig file,
 ///  that were attribute to a particular rule, but were not recognized by the infrastructure.
-/// The configuration data that is recognized by the infrastructure is passed as <see cref="BuildAnalyzerConfiguration"/>.
+/// The configuration data that is recognized by the infrastructure is passed as <see cref="CheckConfiguration"/>.
 /// </summary>
 public sealed class CustomConfigurationData
 {
@@ -41,7 +37,7 @@ public sealed class CustomConfigurationData
     /// Key-value pairs of unstructured data from .editorconfig file.
     /// E.g. if in editorconfig file we'd have:
     /// [*.csrpoj]
-    /// build_analyzer.microsoft.BC0101.name_of_targets_to_restrict = "Build,CoreCompile,ResolveAssemblyReferences"
+    /// build_check.microsoft.BC0101.name_of_targets_to_restrict = "Build,CoreCompile,ResolveAssemblyReferences"
     ///
     /// the ConfigurationData would be:
     /// "name_of_targets_to_restrict" -> "Build,CoreCompile,ResolveAssemblyReferences"
@@ -65,7 +61,7 @@ public sealed class CustomConfigurationData
             return false;
         }
 
-        var customConfigObj = (CustomConfigurationData) obj;
+        var customConfigObj = (CustomConfigurationData)obj;
 
         if (customConfigObj.RuleId != RuleId)
         {

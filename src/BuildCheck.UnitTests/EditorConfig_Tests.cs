@@ -716,7 +716,7 @@ public class EditorConfig_Tests
             return;
         }
 
-        Assert.True(false, message);
+        Assert.Fail(message);
     }
 
     private static bool SequenceEqual<T>(IEnumerable<T> expected, IEnumerable<T> actual, IEqualityComparer<T> comparer = null)
@@ -789,11 +789,11 @@ my_prop = my_val
         SetEqual(
             new[] { Create("my_prop", "my_val") },
             namedSections[0].Properties);
-        
+
         Assert.True(config.IsRoot);
     }
 
-    
+
     [Fact]
     // [WorkItem(52469, "https://github.com/dotnet/roslyn/issues/52469")]
     public void ConfigWithEscapedValues()
@@ -841,13 +841,13 @@ build_metadata.Compile.ToRetrieve = abc123
 build_metadata.Compile.ToRetrieve = def456
 ");
 
-        var set = AnalyzerConfigSet.Create(ImmutableArray.Create(config));
+        var set = CheckConfigSet.Create(ImmutableArray.Create(config));
 
         var sectionOptions = set.GetOptionsForSourcePath("/home/foo/src/{releaseid}.cs");
-        Assert.Equal("abc123", sectionOptions.AnalyzerOptions["build_metadata.compile.toretrieve"]);
+        Assert.Equal("abc123", sectionOptions.CheckOptions["build_metadata.compile.toretrieve"]);
 
         sectionOptions = set.GetOptionsForSourcePath("/home/foo/src/Pages/#foo/HomePage.cs");
-        Assert.Equal("def456", sectionOptions.AnalyzerOptions["build_metadata.compile.toretrieve"]);
+        Assert.Equal("def456", sectionOptions.CheckOptions["build_metadata.compile.toretrieve"]);
     }*/
 
     [Fact]
@@ -864,7 +864,7 @@ my_prop = my_val");
         Assert.Equal(0, config.NamedSections.Length);
     }
 
-    
+
     [Fact]
     public void EmptySection()
     {
@@ -877,7 +877,7 @@ my_prop = my_val");
         Assert.Equal(0, config.NamedSections.Length);
     }
 
-    
+
     [Fact]
     public void CaseInsensitivePropKey()
     {
@@ -895,9 +895,9 @@ my_PROP = my_VAL");
     public void NonReservedKeyPreservedCaseVal()
     {
         var config = ParseConfigFile(string.Join(Environment.NewLine,
-            AnalyzerConfig.ReservedKeys.Select(k => "MY_" + k + " = MY_VAL")));
+            CheckConfig.ReservedKeys.Select(k => "MY_" + k + " = MY_VAL")));
         AssertEx.SetEqual(
-            AnalyzerConfig.ReservedKeys.Select(k => KeyValuePair.Create("my_" + k, "MY_VAL")).ToList(),
+            CheckConfig.ReservedKeys.Select(k => KeyValuePair.Create("my_" + k, "MY_VAL")).ToList(),
             config.GlobalSection.Properties);
     }*/
 
@@ -913,7 +913,7 @@ my_prop = my_other_val");
         Assert.Equal(new[] { Create("my_prop", "my_other_val") }, properties);
     }
 
-    
+
     [Fact]
     public void DuplicateKeysCasing()
     {
@@ -925,7 +925,7 @@ my_PROP = my_other_val");
         Assert.Equal(new[] { Create("my_prop", "my_other_val") }, properties);
     }
 
-    
+
     [Fact]
     public void MissingKey()
     {
@@ -939,7 +939,7 @@ my_prop = my_val2");
             properties);
     }
 
-    
+
 
     [Fact]
     public void MissingVal()
@@ -955,7 +955,7 @@ my_prop2 = my_val");
             properties);
     }
 
-    
+
     [Fact]
     public void SpacesInProperties()
     {
@@ -969,7 +969,7 @@ my_prop2 = my val2");
             properties);
     }
 
-    
+
     [Fact]
     public void EndOfLineComments()
     {
@@ -981,7 +981,7 @@ my_prop2 = my val2 # Comment");
             new[] { Create("my_prop2", "my val2") },
             properties);
     }
-    
+
     [Fact]
     public void SymbolsStartKeys()
     {
@@ -993,7 +993,7 @@ my_prop2 = my val2 # Comment");
         Assert.Equal(0, properties.Count);
     }
 
-    
+
     [Fact]
     public void EqualsAndColon()
     {
@@ -1007,7 +1007,7 @@ my_key2 = my:val");
                     Create("my_key2", "my:val")},
             properties);
     }
-    
+
     [Fact]
     public void SymbolsInProperties()
     {
@@ -1020,7 +1020,7 @@ my_key2 = my@val");
             new[] { Create("my_key2", "my@val") },
             properties);
     }
-    
+
     [Fact]
     public void LongLines()
     {
@@ -1038,7 +1038,7 @@ long: this value continues
             properties);
     }
 
-    
+
     [Fact]
     public void CaseInsensitiveRoot()
     {
@@ -1055,10 +1055,10 @@ RoOt = TruE");
     {
         int index = 0;
         var config = ParseConfigFile(string.Join(Environment.NewLine,
-            AnalyzerConfig.ReservedValues.Select(v => "MY_KEY" + (index++) + " = " + v.ToUpperInvariant())));
+            CheckConfig.ReservedValues.Select(v => "MY_KEY" + (index++) + " = " + v.ToUpperInvariant())));
         index = 0;
         AssertEx.SetEqual(
-            AnalyzerConfig.ReservedValues.Select(v => KeyValuePair.Create("my_key" + (index++), v)).ToList(),
+            CheckConfig.ReservedValues.Select(v => KeyValuePair.Create("my_key" + (index++), v)).ToList(),
             config.GlobalSection.Properties);
     }
     */
@@ -1068,9 +1068,9 @@ RoOt = TruE");
     public void ReservedKeys()
     {
         var config = ParseConfigFile(string.Join(Environment.NewLine,
-            AnalyzerConfig.ReservedKeys.Select(k => k + " = MY_VAL")));
+            CheckConfig.ReservedKeys.Select(k => k + " = MY_VAL")));
         AssertEx.SetEqual(
-            AnalyzerConfig.ReservedKeys.Select(k => KeyValuePair.Create(k, "my_val")).ToList(),
+            CheckConfig.ReservedKeys.Select(k => KeyValuePair.Create(k, "my_val")).ToList(),
             config.GlobalSection.Properties);
     }
     */

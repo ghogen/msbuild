@@ -42,7 +42,7 @@ namespace Microsoft.Build.Tasks
         public string[] FormatArguments { get; set; } = [];
 
         /// <summary>
-        /// <see cref="BuildMessageSeverity"/>.
+        /// Severity of the message.
         /// </summary>
         [Required]
         public string Severity { set; get; } = string.Empty;
@@ -76,7 +76,7 @@ namespace Microsoft.Build.Tasks
                 }
             }
 
-            Log.LogErrorFromResources("CommonTarget.SpecifiedSeverityDoesNotExist", Severity);
+            Log.LogErrorFromResources("CommonSdk.SpecifiedSeverityDoesNotExist", Severity);
 
             return !Log.HasLoggedErrors;
         }

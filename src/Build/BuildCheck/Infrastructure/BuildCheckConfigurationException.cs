@@ -2,10 +2,6 @@
 // The .NET Foundation licenses this file to you under the MIT license.
 
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace Microsoft.Build.Experimental.BuildCheck.Infrastructure;
 
@@ -13,7 +9,7 @@ internal sealed class BuildCheckConfigurationException : Exception
 {
     /// <summary>
     /// Exception to communicate issues with user specified configuration - unsupported scenarios, malformations, etc.
-    /// This exception usually leads to defuncting the particular analyzer for the rest of the build (even if issue occured with a single project).
+    /// This exception usually leads to defuncting the particular check for the rest of the build (even if issue occured with a single project).
     /// </summary>
     internal BuildCheckConfigurationErrorScope buildCheckConfigurationErrorScope;
 
@@ -26,4 +22,7 @@ internal sealed class BuildCheckConfigurationException : Exception
     {
         this.buildCheckConfigurationErrorScope = buildCheckConfigurationErrorScope;
     }
+
+    public BuildCheckConfigurationException(string message, Exception innerException) : base(message, innerException)
+    { }
 }

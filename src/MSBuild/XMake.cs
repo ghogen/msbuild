@@ -25,6 +25,7 @@ using Microsoft.Build.Eventing;
 using Microsoft.Build.Exceptions;
 using Microsoft.Build.Execution;
 using Microsoft.Build.Experimental;
+using Microsoft.Build.Experimental.BuildCheck;
 using Microsoft.Build.Experimental.ProjectCache;
 using Microsoft.Build.Framework;
 using Microsoft.Build.Framework.Telemetry;
@@ -41,6 +42,17 @@ using ForwardingLoggerRecord = Microsoft.Build.Logging.ForwardingLoggerRecord;
 using LoggerDescription = Microsoft.Build.Logging.LoggerDescription;
 using SimpleErrorLogger = Microsoft.Build.Logging.SimpleErrorLogger.SimpleErrorLogger;
 using TerminalLogger = Microsoft.Build.Logging.TerminalLogger.TerminalLogger;
+
+#if NETFRAMEWORK
+// Use I/O operations from Microsoft.IO.Redist which is generally higher perf
+// and also works around https://github.com/dotnet/msbuild/issues/10540.
+// Unnecessary on .NET 6+ because the perf improvements are in-box there.
+using Microsoft.IO;
+using Directory = Microsoft.IO.Directory;
+using File = Microsoft.IO.File;
+using FileInfo = Microsoft.IO.FileInfo;
+using Path = Microsoft.IO.Path;
+#endif
 
 #nullable disable
 
@@ -246,7 +258,6 @@ namespace Microsoft.Build.CommandLine
 
             int exitCode;
             if (
-                ChangeWaves.AreFeaturesEnabled(ChangeWaves.Wave17_4) &&
                 Environment.GetEnvironmentVariable(Traits.UseMSBuildServerEnvVarName) == "1" &&
                 !Traits.Instance.EscapeHatches.EnsureStdOutForChildNodesIsPrimaryStdout &&
                 CanRunServerBasedOnCommandLineSwitches(
@@ -316,7 +327,7 @@ namespace Microsoft.Build.CommandLine
                     commandLineSwitches.IsParameterizedSwitchSet(CommandLineSwitches.ParameterizedSwitch.NodeMode) ||
                     commandLineSwitches[CommandLineSwitches.ParameterlessSwitch.Version] ||
                     FileUtilities.IsBinaryLogFilename(projectFile) ||
-                    ProcessNodeReuseSwitch(commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.NodeReuse]) == false ||
+                    !ProcessNodeReuseSwitch(commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.NodeReuse]) ||
                     IsInteractiveBuild(commandLineSwitches))
                 {
                     canRunServer = false;
@@ -652,7 +663,7 @@ namespace Microsoft.Build.CommandLine
             Environment.SetEnvironmentVariable("MSBuildLoadMicrosoftTargetsReadOnly", "true");
 
 #if FEATURE_GET_COMMANDLINE
-            ErrorUtilities.VerifyThrowArgumentLength(commandLine, nameof(commandLine));
+            ErrorUtilities.VerifyThrowArgumentLength(commandLine);
 #endif
 
             AppDomain.CurrentDomain.UnhandledException += ExceptionHandling.UnhandledExceptionHandler;
@@ -684,7 +695,7 @@ namespace Microsoft.Build.CommandLine
                 // process the detected command line switches -- gather build information, take action on non-build switches, and
                 // check for non-trivial errors
                 string projectFile = null;
-                string[] targets = Array.Empty<string>();
+                string[] targets = [];
                 string toolsVersion = null;
                 Dictionary<string, string> globalProperties = null;
                 Dictionary<string, string> restoreProperties = null;
@@ -717,9 +728,9 @@ namespace Microsoft.Build.CommandLine
                 string outputResultsCache = null;
                 bool question = false;
                 bool isBuildCheckEnabled = false;
-                string[] getProperty = Array.Empty<string>();
-                string[] getItem = Array.Empty<string>();
-                string[] getTargetResult = Array.Empty<string>();
+                string[] getProperty = [];
+                string[] getItem = [];
+                string[] getTargetResult = [];
                 string getResultOutputFile = string.Empty;
                 BuildResult result = null;
 #if FEATURE_REPORTFILEACCESSES
@@ -808,7 +819,7 @@ namespace Microsoft.Build.CommandLine
                     // as if a build is happening
                     if (FileUtilities.IsBinaryLogFilename(projectFile))
                     {
-                        ReplayBinaryLog(projectFile, loggers, distributedLoggerRecords, cpuCount);
+                        ReplayBinaryLog(projectFile, loggers, distributedLoggerRecords, cpuCount, isBuildCheckEnabled);
                     }
                     else if (outputPropertiesItemsOrTargetResults && FileUtilities.IsSolutionFilename(projectFile))
                     {
@@ -1145,8 +1156,8 @@ namespace Microsoft.Build.CommandLine
                 return;
             }
 
-            Console.WriteLine(ResourceUtilities.GetResourceString("AbortingBuild"));
             s_buildCancellationSource.Cancel();
+
 
             // The OS takes a lock in
             // kernel32.dll!_SetConsoleCtrlHandler, so if a task
@@ -1569,7 +1580,7 @@ namespace Microsoft.Build.CommandLine
 
                                 if (graphBuildOptions != null)
                                 {
-                                    graphBuildRequest = new GraphBuildRequestData(new[] { new ProjectGraphEntryPoint(projectFile, globalProperties) }, targets, null, flags, graphBuildOptions);
+                                    graphBuildRequest = new GraphBuildRequestData([new ProjectGraphEntryPoint(projectFile, globalProperties)], targets, null, flags, graphBuildOptions);
                                 }
                                 else
                                 {
@@ -1749,6 +1760,30 @@ namespace Microsoft.Build.CommandLine
                     MessageImportance.Low),
             };
 
+            NativeMethodsShared.LongPathsStatus longPaths = NativeMethodsShared.IsLongPathsEnabled();
+            if (longPaths != NativeMethodsShared.LongPathsStatus.NotApplicable)
+            {
+                messages.Add(
+                    new BuildManager.DeferredBuildMessage(
+                        ResourceUtilities.FormatResourceStringIgnoreCodeAndKeyword(
+                            "LongPaths",
+                            ResourceUtilities.FormatResourceStringIgnoreCodeAndKeyword(
+                                "LongPaths_" + longPaths.ToString())),
+                        MessageImportance.Low));
+            }
+
+            NativeMethodsShared.SAC_State SAC_State = NativeMethodsShared.GetSACState();
+            if (SAC_State != NativeMethodsShared.SAC_State.NotApplicable && SAC_State != NativeMethodsShared.SAC_State.Missing)
+            {
+                messages.Add(
+                    new BuildManager.DeferredBuildMessage(
+                        ResourceUtilities.FormatResourceStringIgnoreCodeAndKeyword(
+                            "SAC",
+                            ResourceUtilities.FormatResourceStringIgnoreCodeAndKeyword(
+                                "SAC_" + SAC_State.ToString())),
+                        MessageImportance.Low));
+            }
+
             if (Traits.Instance.DebugEngine)
             {
                 messages.Add(
@@ -1830,7 +1865,7 @@ namespace Microsoft.Build.CommandLine
                 projectFile,
                 restoreGlobalProperties,
                 toolsVersion,
-                targetsToBuild: new[] { MSBuildConstants.RestoreTargetName },
+                targetsToBuild: [MSBuildConstants.RestoreTargetName],
                 hostServices: null,
                 flags: flags);
 
@@ -2503,6 +2538,11 @@ namespace Microsoft.Build.CommandLine
 #endif
 
             bool useTerminalLogger = ProcessTerminalLoggerConfiguration(commandLineSwitches, out string aggregatedTerminalLoggerParameters);
+
+            // This is temporary until we can remove the need for the environment variable.
+            // DO NOT use this environment variable for any new features as it will be removed without further notice.
+            Environment.SetEnvironmentVariable("_MSBUILDTLENABLED", useTerminalLogger ? "1" : "0");
+
             DisplayVersionMessageIfNeeded(recursing, useTerminalLogger, commandLineSwitches);
 
             // Idle priority would prevent the build from proceeding as the user does normal actions.
@@ -2619,9 +2659,9 @@ namespace Microsoft.Build.CommandLine
                     targets = ProcessTargetSwitch(commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.Target]);
 
                     // If we are looking for the value of a specific property or item post-evaluation or a target post-build, figure that out now
-                    getProperty = commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.GetProperty] ?? Array.Empty<string>();
-                    getItem = commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.GetItem] ?? Array.Empty<string>();
-                    getTargetResult = commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.GetTargetResult] ?? Array.Empty<string>();
+                    getProperty = commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.GetProperty] ?? [];
+                    getItem = commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.GetItem] ?? [];
+                    getTargetResult = commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.GetTargetResult] ?? [];
                     getResultOutputFile = commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.GetResultOutputFile].FirstOrDefault() ?? string.Empty;
 
                     bool minimizeStdOutOutput = getProperty.Length + getItem.Length + getTargetResult.Length > 0 && getResultOutputFile.Length == 0;
@@ -2767,8 +2807,8 @@ namespace Microsoft.Build.CommandLine
         private static bool IsBuildCheckEnabled(CommandLineSwitches commandLineSwitches)
         {
             // Opt-in behavior to be determined by: https://github.com/dotnet/msbuild/issues/9723
-            bool isAnalysisEnabled = commandLineSwitches.IsParameterizedSwitchSet(CommandLineSwitches.ParameterizedSwitch.Analyze);
-            return isAnalysisEnabled;
+            bool isBuildCheckEnabled = commandLineSwitches.IsParameterizedSwitchSet(CommandLineSwitches.ParameterizedSwitch.Check);
+            return isBuildCheckEnabled;
         }
 
         private static bool ProcessTerminalLoggerConfiguration(CommandLineSwitches commandLineSwitches, out string aggregatedParameters)
@@ -3007,13 +3047,13 @@ namespace Microsoft.Build.CommandLine
 
 
         /// <summary>
-        /// Identifies if there is rsp files near the project file 
+        /// Identifies if there is rsp files near the project file
         /// </summary>
         /// <returns>true if there autoresponse file was found</returns>
         private static bool CheckAndGatherProjectAutoResponseFile(CommandLineSwitches switchesFromAutoResponseFile, CommandLineSwitches commandLineSwitches, bool recursing, string commandLine)
         {
             bool found = false;
-           
+
             var projectDirectory = GetProjectDirectory(commandLineSwitches[CommandLineSwitches.ParameterizedSwitch.Project]);
 
             if (!recursing && !commandLineSwitches[CommandLineSwitches.ParameterlessSwitch.NoAutoResponse])
@@ -3222,7 +3262,7 @@ namespace Microsoft.Build.CommandLine
             ISet<string> warningSwitches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (string code in parameters
-                .SelectMany(parameter => parameter?.Split(s_commaSemicolon, StringSplitOptions.RemoveEmptyEntries) ?? new string[] { null }))
+                .SelectMany(parameter => parameter?.Split(s_commaSemicolon, StringSplitOptions.RemoveEmptyEntries) ?? [null]))
             {
                 if (code == null)
                 {
@@ -3497,7 +3537,7 @@ namespace Microsoft.Build.CommandLine
             if (projectFile == null)
             {
                 ValidateExtensions(projectsExtensionsToIgnore);
-                HashSet<string> extensionsToIgnore = new HashSet<string>(projectsExtensionsToIgnore ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+                HashSet<string> extensionsToIgnore = new HashSet<string>(projectsExtensionsToIgnore ?? [], StringComparer.OrdinalIgnoreCase);
                 // Get all files in the current directory that have a proj-like extension
                 string[] potentialProjectFiles = getFiles(projectDirectory ?? ".", "*.*proj");
                 List<string> actualProjectFiles = new List<string>();
@@ -3512,8 +3552,8 @@ namespace Microsoft.Build.CommandLine
                     }
                 }
 
-                // Get all files in the current directory that have a sln extension
-                string[] potentialSolutionFiles = getFiles(projectDirectory ?? ".", "*.sln");
+                // Get all files in the current directory that have a sln-like extension
+                string[] potentialSolutionFiles = getFiles(projectDirectory ?? ".", "*.sln?");
                 List<string> actualSolutionFiles = new List<string>();
                 List<string> solutionFilterFiles = new List<string>();
                 if (potentialSolutionFiles != null)
@@ -4406,20 +4446,26 @@ namespace Microsoft.Build.CommandLine
             string binaryLogFilePath,
             ILogger[] loggers,
             IEnumerable<DistributedLoggerRecord> distributedLoggerRecords,
-            int cpuCount)
+            int cpuCount,
+            bool isBuildCheckEnabled)
         {
+
             var replayEventSource = new BinaryLogReplayEventSource();
+
+            var eventSource = isBuildCheckEnabled ?
+                BuildCheckReplayModeConnector.GetMergedEventSource(BuildManager.DefaultBuildManager, replayEventSource) :
+                replayEventSource;
 
             foreach (var distributedLoggerRecord in distributedLoggerRecords)
             {
                 ILogger centralLogger = distributedLoggerRecord.CentralLogger;
                 if (centralLogger is INodeLogger nodeLogger)
                 {
-                    nodeLogger.Initialize(replayEventSource, cpuCount);
+                    nodeLogger.Initialize(eventSource, cpuCount);
                 }
                 else
                 {
-                    centralLogger?.Initialize(replayEventSource);
+                    centralLogger?.Initialize(eventSource);
                 }
             }
 
@@ -4427,11 +4473,11 @@ namespace Microsoft.Build.CommandLine
             {
                 if (logger is INodeLogger nodeLogger)
                 {
-                    nodeLogger.Initialize(replayEventSource, cpuCount);
+                    nodeLogger.Initialize(eventSource, cpuCount);
                 }
                 else
                 {
-                    logger.Initialize(replayEventSource);
+                    logger.Initialize(eventSource);
                 }
             }
 
@@ -4543,51 +4589,15 @@ namespace Microsoft.Build.CommandLine
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_1_Syntax"));
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_2_Description"));
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_3_SwitchesHeader"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_9_TargetSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_10_PropertySwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_17_MaximumCPUSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_23_ToolsVersionSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_12_VerbositySwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_13_ConsoleLoggerParametersSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_14_NoConsoleLoggerSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_20_FileLoggerSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_22_FileLoggerParametersSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_18_DistributedLoggerSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_21_DistributedFileLoggerSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_11_LoggerSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_30_BinaryLoggerSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_28_WarnAsErrorSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_40_WarnNotAsErrorSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_29_WarnAsMessageSwitch"));
-#if FEATURE_XML_SCHEMA_VALIDATION
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_15_ValidateSwitch"));
-#endif
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_19_IgnoreProjectExtensionsSwitch"));
-#if FEATURE_NODE_REUSE // Do not advertise the switch when feature is off, even though we won't fail to parse it for compatibility with existing build scripts
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_24_NodeReuse"));
-#endif
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_25_PreprocessSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_38_TargetsSwitch"));
-
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_26_DetailedSummarySwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_31_RestoreSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_33_RestorePropertySwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_32_ProfilerSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_34_InteractiveSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_35_IsolateProjectsSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_InputCachesFiles"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_OutputCacheFile"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_36_GraphBuildSwitch"));
-#if FEATURE_REPORTFILEACCESSES
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_42_ReportFileAccessesSwitch"));
-#endif
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_39_LowPrioritySwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_41_QuestionSwitch"));
+            foreach (string parameterizedSwitchRsouceId in CommandLineSwitches.GetParameterizedSwitchResourceIds())
+            {
+                Console.WriteLine(AssemblyResources.GetString(parameterizedSwitchRsouceId));
+            }
+            foreach (string parameterlessSwitchRsouceId in CommandLineSwitches.GetParameterlessSwitchResourceIds())
+            {
+                Console.WriteLine(AssemblyResources.GetString(parameterlessSwitchRsouceId));
+            }
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_7_ResponseFile"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_8_NoAutoResponseSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_5_NoLogoSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_6_VersionSwitch"));
-            Console.WriteLine(AssemblyResources.GetString("HelpMessage_4_HelpSwitch"));
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_16_Examples"));
             Console.WriteLine(AssemblyResources.GetString("HelpMessage_37_DocsLink"));
         }

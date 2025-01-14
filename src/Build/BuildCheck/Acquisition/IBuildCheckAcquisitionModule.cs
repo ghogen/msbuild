@@ -3,14 +3,13 @@
 
 using System.Collections.Generic;
 using Microsoft.Build.Experimental.BuildCheck.Infrastructure;
-using Microsoft.Build.Framework;
 
 namespace Microsoft.Build.Experimental.BuildCheck.Acquisition;
 
 internal interface IBuildCheckAcquisitionModule
 {
     /// <summary>
-    /// Creates a list of factory delegates for building analyzer rules instances from a given assembly path.
+    /// Creates a list of factory delegates for building check rules instances from a given assembly path.
     /// </summary>
-    List<BuildAnalyzerFactory> CreateBuildAnalyzerFactories(AnalyzerAcquisitionData analyzerAcquisitionData, BuildEventContext buildEventContext);
+    List<CheckFactory> CreateCheckFactories(CheckAcquisitionData checkAcquisitionData, ICheckContext checkContext);
 }

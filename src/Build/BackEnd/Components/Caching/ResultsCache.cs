@@ -281,7 +281,7 @@ namespace Microsoft.Build.BackEnd
         /// <param name="host">The component host.</param>
         public void InitializeComponent(IBuildComponentHost host)
         {
-            ErrorUtilities.VerifyThrowArgumentNull(host, nameof(host));
+            ErrorUtilities.VerifyThrowArgumentNull(host);
         }
 
         /// <summary>
@@ -351,8 +351,13 @@ namespace Microsoft.Build.BackEnd
         /// <returns>True if the flags and project state filter of the build request is compatible with the build result.</returns>
         private static bool AreBuildResultFlagsCompatible(BuildRequest buildRequest, BuildResult buildResult)
         {
+            if (buildResult.BuildRequestDataFlags is null)
+            {
+                return true;
+            }
+
             BuildRequestDataFlags buildRequestDataFlags = buildRequest.BuildRequestDataFlags;
-            BuildRequestDataFlags buildResultDataFlags = buildResult.BuildRequestDataFlags;
+            BuildRequestDataFlags buildResultDataFlags = (BuildRequestDataFlags)buildResult.BuildRequestDataFlags;
 
             if ((buildRequestDataFlags & FlagsAffectingBuildResults) != (buildResultDataFlags & FlagsAffectingBuildResults))
             {

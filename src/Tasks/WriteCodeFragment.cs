@@ -34,7 +34,7 @@ namespace Microsoft.Build.Tasks
     {
         private const string TypeNameSuffix = "_TypeName";
         private const string IsLiteralSuffix = "_IsLiteral";
-        private static readonly IEnumerable<string> NamespaceImports = new string[] { "System", "System.Reflection" };
+        private static readonly string[] NamespaceImports = ["System", "System.Reflection"];
         private static readonly IReadOnlyDictionary<string, ParameterType> EmptyParameterTypes = new Dictionary<string, ParameterType>();
 
         /// <summary>
@@ -119,7 +119,9 @@ namespace Microsoft.Build.Tasks
             }
             catch (Exception ex) when (ExceptionHandling.IsIoRelatedException(ex))
             {
-                Log.LogErrorWithCodeFromResources("WriteCodeFragment.CouldNotWriteOutput", (OutputFile == null) ? String.Empty : OutputFile.ItemSpec, ex.Message);
+                string itemSpec = OutputFile?.ItemSpec ?? String.Empty;
+                string lockedFileMessage = LockCheck.GetLockedFileMessage(itemSpec);
+                Log.LogErrorWithCodeFromResources("WriteCodeFragment.CouldNotWriteOutput", itemSpec, ex.Message, lockedFileMessage);
                 return false;
             }
 
